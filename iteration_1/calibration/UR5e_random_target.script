@@ -1,0 +1,24 @@
+# Node 1: generate, check and MoveJ. Follow with UR_Report_And_Wait.script.
+# Base metres; TCP +Z points along Base -Z, matching IT1.5 (zero tool spin).
+# MoveJ reaches this orientation at the target; it does not hold it in transit.
+cal_pose = p[0,0,0.350,0,0,0]
+cal_near = get_actual_joint_positions()
+cal_valid = False
+cal_attempt = 0
+while not cal_valid and cal_attempt < 1000:
+  cal_attempt = cal_attempt + 1
+  cal_pose[0] = -0.690 + random()*0.450
+  cal_pose[1] = -0.640 + random()*1.280
+  cal_pose[2] = 0.350
+  if get_inverse_kin_has_solution(cal_pose, qnear=cal_near):
+    cal_q = get_inverse_kin(cal_pose, qnear=cal_near)
+    cal_valid = is_within_safety_limits(cal_q)
+  end
+  sync()
+end
+if not cal_valid:
+  popup("No valid calibration target found. Check TCP, orientation and limits.", error=True, blocking=True)
+  halt
+end
+global cal_target_q = cal_q
+movej(cal_target_q, a=0.2, v=0.1, r=0)

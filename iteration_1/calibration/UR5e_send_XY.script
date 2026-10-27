@@ -1,0 +1,9 @@
+
+sleep(0.2)
+cal_actual = get_actual_tcp_pose()
+cal_pc = rpc_factory("xmlrpc", "http://192.168.0.20:50000")
+cal_go = cal_pc.send_xy(cal_actual[0], cal_actual[1])
+cal_pc.closeXMLRPCClientConnection()
+if not cal_go:
+  halt
+end

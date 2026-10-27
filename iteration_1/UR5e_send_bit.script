@@ -1,0 +1,4 @@
+bit_value = 1
+bit_pc = rpc_factory("xmlrpc", "http://192.168.0.20:50000")
+bit_ack = bit_pc.receive_bit(bit_value)
+bit_pc.closeXMLRPCClientConnection()

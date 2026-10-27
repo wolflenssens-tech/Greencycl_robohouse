@@ -1,0 +1,236 @@
+def gc_stop(reason):
+  textmsg("Greencycl IT1.8 rejected: ", reason)
+  popup(reason, title="Greencycl target rejected", error=True, blocking=False)
+  halt
+end
+
+def gc_pose(data, spin):
+  local result = p[data[0],data[1],data[2],0,0,spin]
+  return result
+end
+
+def gc_xyz_error(a, b):
+  return sqrt((a[0]-b[0])*(a[0]-b[0]) + (a[1]-b[1])*(a[1]-b[1]) + (a[2]-b[2])*(a[2]-b[2]))
+end
+
+def gc_joint_step(a, b):
+  local largest = 0.0
+  local i = 0
+  while i < 6:
+    if norm(a[i]-b[i]) > largest:
+      largest = norm(a[i]-b[i])
+    end
+    i = i + 1
+  end
+  return largest
+end
+
+def gc_orientation_error(tcp_pose):
+  local tip = pose_trans(tcp_pose, p[0,0,0.1,0,0,0])
+  local expected = [tcp_pose[0],tcp_pose[1],tcp_pose[2]+0.1]
+  return gc_xyz_error(tip, expected)
+end
+
+def gc_refine(data, start_spin, start_seed, tcp):
+  local spin = start_spin
+  local seed = start_seed
+  local target = gc_pose(data, spin)
+  local failed = [-1,0,0,0,0,0,0]
+  if not get_inverse_kin_has_solution(target, qnear=seed, tcp=tcp):
+    return failed
+  end
+  local q = get_inverse_kin(target, qnear=seed, tcp=tcp)
+  failed[0] = 0
+  local iteration = 0
+  while iteration < 30:
+    local error = q[5]-data[3]
+    if norm(error) < d2r(0.1):
+      local endpoint = get_forward_kin(q, tcp=tcp)
+      if gc_xyz_error(endpoint, data) > 0.0001 or gc_orientation_error(endpoint) > 0.000175:
+        return failed
+      end
+      if not is_within_safety_limits(q):
+        failed[0] = 2
+        return failed
+      end
+      return [1,q[0],q[1],q[2],q[3],q[4],q[5]]
+    end
+
+    local derivative_ok = False
+    local probe_step = 0.005
+    local side = 0
+    local slope = 0.0
+    while side < 2 and not derivative_ok:
+      local probe = gc_pose(data, spin+probe_step)
+      if get_inverse_kin_has_solution(probe, qnear=q, tcp=tcp):
+        local probe_q = get_inverse_kin(probe, qnear=q, tcp=tcp)
+        slope = (probe_q[5]-q[5])/probe_step
+        if gc_joint_step(probe_q, q) < 0.35 and norm(slope) >= 0.01 and norm(slope) <= 100.0:
+          derivative_ok = True
+        end
+      end
+      if not derivative_ok:
+        probe_step = -0.005
+      end
+      side = side + 1
+    end
+    if not derivative_ok:
+      return failed
+    end
+
+    local correction = error/slope
+    if correction > 0.25:
+      correction = 0.25
+    elif correction < -0.25:
+      correction = -0.25
+    end
+    local accepted = False
+    local retry = 0
+    while retry < 10 and not accepted:
+      local trial_spin = spin-correction
+      local trial = gc_pose(data, trial_spin)
+      if get_inverse_kin_has_solution(trial, qnear=q, tcp=tcp):
+        local trial_q = get_inverse_kin(trial, qnear=q, tcp=tcp)
+        if gc_joint_step(trial_q, q) < 0.75 and norm(trial_q[5]-data[3]) < norm(error):
+          spin = trial_spin
+          q = trial_q
+          accepted = True
+        end
+      end
+      correction = correction*0.5
+      retry = retry + 1
+      sync()
+    end
+    if not accepted:
+      return failed
+    end
+    iteration = iteration + 1
+    sync()
+  end
+  return failed
+end
+
+def gc_try_solve(data, current, tcp):
+  local seed = [current[0],current[1],current[2],current[3],current[4],data[3]]
+  local attempt = 0
+  local spin = 0.0
+  local offset = d2r(15)
+  local positive = True
+  local reachable = False
+  local safety_rejected = False
+  while attempt < 25:
+    local result = gc_refine(data, spin, seed, tcp)
+    if result[0] == 1:
+      return result
+    end
+    if result[0] >= 0:
+      reachable = True
+    end
+    if result[0] == 2:
+      safety_rejected = True
+    end
+    if positive:
+      spin = offset
+      positive = False
+    else:
+      spin = -offset
+      offset = offset+d2r(15)
+      positive = True
+    end
+    attempt = attempt + 1
+    sync()
+  end
+  if safety_rejected:
+    return [2,0,0,0,0,0,0]
+  elif not reachable:
+    return [-1,0,0,0,0,0,0]
+  end
+  return [0,0,0,0,0,0,0]
+end
+
+def gc_solve(data):
+  local tcp = get_tcp_offset()
+  local current = get_actual_joint_positions()
+  local adjustment_step = 0.001
+  local max_adjustment = 0.025
+  textmsg("Requested Base XYZ(m), Wrist3(rad): ", data)
+  textmsg("Active TCP: ", tcp)
+  local result = gc_try_solve(data, current, tcp)
+  if result[0] == 1:
+    return [data[0],data[1],data[2],data[3],result[1],result[2],result[3],result[4],result[5],result[6]]
+  end
+  if result[0] == 2:
+    gc_stop("Matching solution exceeds configured safety limits")
+  end
+
+  local step_index = 1
+  local shift = adjustment_step
+  while shift <= max_adjustment+0.000000001:
+    if shift > max_adjustment:
+      shift = max_adjustment
+    end
+    local axis = 0
+    while axis < 3:
+      local direction = -1.0
+      if data[axis] < 0:
+        direction = 1.0
+      end
+      local side = 0
+      while side < 2:
+        local candidate = [data[0],data[1],data[2],data[3]]
+        candidate[axis] = data[axis]+direction*shift
+        result = gc_try_solve(candidate, current, tcp)
+        if result[0] == 1:
+          textmsg("Accepted adjusted Base XYZ(m), Wrist3(rad): ", candidate)
+          textmsg("Adjusted axis (0=X,1=Y,2=Z): ", axis)
+          textmsg("Adjustment (m): ", candidate[axis]-data[axis])
+          return [candidate[0],candidate[1],candidate[2],candidate[3],result[1],result[2],result[3],result[4],result[5],result[6]]
+        end
+        direction = -direction
+        side = side+1
+        sync()
+      end
+      axis = axis+1
+    end
+    step_index = step_index+1
+    shift = step_index*adjustment_step
+  end
+  gc_stop("No valid target found within 20 mm along +/-X, +/-Y or +/-Z. Check XYZ, TCP and Wrist 3.")
+  return [data[0],data[1],data[2],data[3],current[0],current[1],current[2],current[3],current[4],current[5]]
+end
+
+textmsg("Loaded Greencycl IT1.8 - TCP +Z up XYZ + absolute Wrist3")
+gc_helper = rpc_factory("xmlrpc", "http://192.168.0.20:50000")
+gc_target = gc_helper.recv_target()
+if get_list_length(gc_target) != 4:
+  gc_stop("Expected XYZ and absolute Wrist 3")
+end
+while gc_target[0] == 10000:
+  sleep(0.1)
+  gc_target = gc_helper.recv_target()
+  if get_list_length(gc_target) != 4:
+    gc_stop("Expected XYZ and absolute Wrist 3")
+  end
+end
+gc_index = 0
+while gc_index < 4:
+  if not (norm(gc_target[gc_index]) < 1e100):
+    gc_stop("Non-finite target")
+  end
+  gc_index = gc_index + 1
+end
+gc_requested = [gc_target[0],gc_target[1],gc_target[2],gc_target[3]]
+gc_solution = gc_solve(gc_requested)
+gc_target = [gc_solution[0],gc_solution[1],gc_solution[2],gc_solution[3]]
+gc_q = [gc_solution[4],gc_solution[5],gc_solution[6],gc_solution[7],gc_solution[8],gc_solution[9]]
+if not is_within_safety_limits(gc_q):
+  gc_stop("Accepted joint target exceeds configured safety limits")
+end
+movej(gc_q, a=0.4, v=0.4, r=0)
+gc_actual = get_actual_tcp_pose()
+gc_joints = get_actual_joint_positions()
+if gc_xyz_error(gc_actual, gc_target) > 0.001 or norm(gc_joints[5]-gc_target[3]) > d2r(0.5) or gc_orientation_error(gc_actual) > 0.000873:
+  gc_stop("Measured XYZ, Wrist 3 or TCP +Z up orientation differs from target")
+end
+gc_response = gc_helper.send_data(gc_actual, r2d(gc_joints[5]))
+gc_helper.closeXMLRPCClientConnection()
