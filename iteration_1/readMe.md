@@ -1,10 +1,10 @@
-# Greencycl — Iteration 1
+# Greencycl automation
 
 Object detection and grasp-target generation for a Universal Robots arm using an Intel RealSense depth camera and a trained YOLO model.
 
 The system detects objects, estimates their position and orientation, converts camera measurements into robot coordinates, and sends one target at a time to the robot over XML-RPC.
 
-## Workflow - python side
+## Workflow — Python side
 
 1. Capture aligned colour and depth images from the RealSense camera.
 2. Locate AprilTag ID 1 as the base reference.
@@ -14,20 +14,27 @@ The system detects objects, estimates their position and orientation, converts c
 6. Calculate robot XY coordinates, grasp height, and Wrist 3 angle.
 7. Send the target to the robot and wait for its completion signal before capturing again.
 
-## Workflow - UR5e side (local)
+## Workflow — UR5e side (Local mode)
 
-1. Initialize gripper
-2. MoveJ to home
-3. open <gripper>
-4. loop
-    5. script: UR5e_target
-    6. close <gripper>
-    7. MoveJ to safe point (this is a point in the air where the arm avoids dangerous movements or objects)
-    8. MoveJ to drop point
-    9. open <gripper>
-    10. script: UR_sent_bit
-    11. MoveJ to safe point
+The actual pendant program follows this sequence:
 
+```text
+Initialize gripper
+MoveJ to Home
+Open gripper
+Loop
+    Script: UR5e_target.script
+    Close gripper
+    MoveJ to safe point
+    MoveJ to drop point
+    Open gripper
+    Script: UR5e_send_bit.script
+    MoveJ to safe point
+```
+
+Home is used during initialization. The safe point is a taught position in the air used between the target and drop point, and again before the next loop iteration, to route the arm around surrounding objects.
+
+The completion signal is sent after opening the gripper at the drop point and before the final MoveJ to the safe point. This starts the next camera capture while the robot returns to the safe point. On the next iteration, `UR5e_target.script` waits if the new target is not yet ready.
 
 ## Folder contents
 
@@ -88,18 +95,7 @@ The UR5e runs in **Local mode**. The operator starts the program from the teach 
 
 The `.script` files are included here; the complete pendant program and its taught Home/waypoint configuration are not included.
 
-A typical program structure is:
-
-```text
-Home / initial position
-Loop
-    UR5e_target.script
-    Gripper and handling nodes for the pick cycle
-    MoveJ / Home nodes for the return sequence
-    UR5e_send_bit.script
-```
-
-Use the setup's existing Home and handling sequence. Place the completion script after the robot has finished the cycle and cleared the camera's working area, because it immediately allows the next capture.
+The exact node order is shown in **Workflow — UR5e side (Local mode)** above. The Script nodes handle target acquisition and completion signalling; the gripper and taught MoveJ nodes carry out the handling sequence.
 
 `UR5e_target.script` polls `recv_target()` until a target is available. It uses the active TCP and inverse kinematics to find a joint configuration matching the requested XYZ and absolute Wrist 3 angle, with TCP +Z aligned with base +Z at the endpoint. It then executes `movej(gc_q, a=0.4, v=0.4, r=0)`, checks the measured endpoint, and reports feedback to the PC. The target script therefore already contains the move to the detected target; the pendant's other MoveJ and Home nodes handle the rest of the sequence.
 
@@ -179,4 +175,5 @@ Settings are defined at the top of `calculate.py`.
 | Grasp height | 35% of estimated object height, with a 10 mm minimum |
 
 Calibration values and reference depth are specific to the current camera and robot arrangement.
+
 
