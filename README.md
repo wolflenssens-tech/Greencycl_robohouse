@@ -4,7 +4,7 @@ Object detection and grasp-target generation for a Universal Robots arm using an
 
 The system detects objects, estimates their position and orientation, converts camera measurements into robot coordinates, and sends one target at a time to the robot over XML-RPC.
 
-## Workflow — Python side
+## Workflow (Python side)
 
 1. Capture aligned colour and depth images from the RealSense camera.
 2. Locate AprilTag ID 1 as the base reference.
@@ -14,7 +14,7 @@ The system detects objects, estimates their position and orientation, converts c
 6. Calculate robot XY coordinates, grasp height, and Wrist 3 angle.
 7. Send the target to the robot and wait for its completion signal before capturing again.
 
-## Workflow — UR5e side (Local mode)
+## Workflow UR5e side (Local mode)
 
 The actual pendant program follows this sequence:
 
